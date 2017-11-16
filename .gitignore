@@ -1,0 +1,11 @@
+# for mac
+.DS_Store
+
+# IDE
+.idea
+
+# python
+__pycache__
+
+# test
+*.tfrecord

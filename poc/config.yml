@@ -1,0 +1,39 @@
+num_classes: 2
+
+model:
+  image_size: # width, height
+    - 300
+    - 300
+
+  default_layer_values: &default
+    iou_threshold: 0.5
+    min_threshold: 0.5
+
+  textbox_layers:
+    # conv4_3
+    - <<: *default
+      conv_size: # width, height
+      - 10
+      - 10
+      anchor_scale: 30
+      min_threshold: 0.1
+    # conv6
+    - <<: *default
+      conv_size:
+      - 5
+      - 5
+      anchor_scale: 60
+      min_threshold: 0.1
+
+  anchors:
+    - ratio: 1
+    - ratio: 10
+
+data:
+  num_samples: 3
+  source: poc/test.tfrecord
+
+train:
+  num_readers: 1
+  batch_size: 2
+  queue_min: 8192
