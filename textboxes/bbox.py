@@ -11,6 +11,26 @@ import tensorflow.contrib.slim as slim
     dbox: default(=predefined) bounding box
 """
 
+"""
+def loc_to_bbox(config, loc):
+    s = [slice(None, None, None) for i in range(len(loc.get_shape()) - 1)]
+
+    dy = loc.__getitem__(s + [0])
+    dx = loc.__getitem__(s + [1])
+    dh = loc.__getitem__(s + [2])
+    dw = loc.__getitem__(s + [3])
+
+    y1 = cy - h / 2.
+    y2 = cy + h / 2.
+    x1 = cx - w / 2.
+    x2 = cx + w / 2.
+    return tf.stack([y1, x1, y2, x2], -1)
+"""
+
+BBOX = 0
+CENTERED = 1
+BBOX_REG = 2
+
 
 def anchors(layer_cfg):
     shape = layer_cfg['shape']
@@ -32,7 +52,7 @@ def anchors(layer_cfg):
     return dbox_cy, dbox_cx, dbox_h, dbox_w
 
 
-def encode_one_layer(layer_cfg, num_gt_gboxes, gt_gboxes):
+def encode_one_layer(layer_cfg, num_gt_gboxes, gt_gboxes, format=CENTERED):
     """
     :param layer_cfg: config
     :param num_gt_gboxes:
@@ -40,7 +60,7 @@ def encode_one_layer(layer_cfg, num_gt_gboxes, gt_gboxes):
     :return: iou, location(shape=[?,...][4])
     """
 
-    with tf.name_scope("make_anchor_box"):
+    with tf.name_scope("def_anchor_box"):
         dbox_cy, dbox_cx, dbox_h, dbox_w = anchors(layer_cfg)
 
         dbox_cy = np.expand_dims(dbox_cy, axis=-1)
@@ -54,10 +74,10 @@ def encode_one_layer(layer_cfg, num_gt_gboxes, gt_gboxes):
         vol_anchor = (dbox_x2 - dbox_x1) * (dbox_y2 - dbox_y1)
 
     max_iou = tf.zeros(dbox_y1.shape, tf.float32)
-    gbox_y1 = tf.zeros(dbox_y1.shape, tf.float32)
-    gbox_x1 = tf.zeros(dbox_y1.shape, tf.float32)
-    gbox_y2 = tf.zeros(dbox_y1.shape, tf.float32)
-    gbox_x2 = tf.zeros(dbox_y1.shape, tf.float32)
+    gt_bbox_y1 = tf.zeros(dbox_y1.shape, tf.float32)
+    gt_bbox_x1 = tf.zeros(dbox_y1.shape, tf.float32)
+    gt_bbox_y2 = tf.zeros(dbox_y1.shape, tf.float32)
+    gt_bbox_x2 = tf.zeros(dbox_y1.shape, tf.float32)
 
     def body(idx, max_iou, gbox_y1, gbox_x1, gbox_y2, gbox_x2):
         """
@@ -91,61 +111,71 @@ def encode_one_layer(layer_cfg, num_gt_gboxes, gt_gboxes):
 
         # >, & 모두 elementwise 연산이고 tf에서 override되어있다.
         # tf.greater, tf.logical_and
-        mask = (iou > max_iou) & (iou > layer_cfg.iou_threshold)
+        mask = (iou > max_iou) & (iou > layer_cfg['iou_threshold'])
 
         # 찾은 anchor box 추가
         max_iou, gbox_y1, gbox_x1, gbox_y2, gbox_x2 = _update(mask)
 
-        # 새로찾은 gbox도 없고 && 제일 큰 iou가 min_threshold이상이라면 그것을 found에 추가
+        # threshold를 넘긴 값이 anchorbox가 없을 때는 가장 큰 것을 found에 추가.
+        # 이게 없으면 num_pos가 0이되어 계산에 문제가 생길 수 있다. => 사실상 벌어지지 않는 일.
         # TODO: 근거를 찾자.
+        """
         v = tf.reduce_max(iou)
-        max_iou, gbox_y1, gbox_x1, gbox_y2, gbox_x2 = \
+        max_iou, gt_bbox_y1, gt_bbox_x1, gt_bbox_y2, gt_bbox_x2 = \
             tf.cond(
-                ~tf.reduce_all(mask) & (v > layer_cfg.min_threshold),
+                ~tf.reduce_all(mask),
                 lambda: _update(tf.equal(iou, v)),
-                lambda: (max_iou, gbox_y1, gbox_x1, gbox_y2, gbox_x2)
+                lambda: (max_iou, gt_bbox_y1, gt_bbox_x1, gt_bbox_y2, gt_bbox_x2)
             )
+        """
 
         return idx + 1, max_iou, gbox_y1, gbox_x1, gbox_y2, gbox_x2
 
     # 2 모든 gbox에 대해서 찾자.
-    _, max_iou, gbox_y1, gbox_x1, gbox_y2, gbox_x2 = \
+    _, max_iou, gt_bbox_y1, gt_bbox_x1, gt_bbox_y2, gt_bbox_x2 = \
         tf.while_loop(
             lambda i, *_: i < num_gt_gboxes,
             body,
-            [0, max_iou, gbox_y1, gbox_x1, gbox_y2, gbox_x2]
+            [0, max_iou, gt_bbox_y1, gt_bbox_x1, gt_bbox_y2, gt_bbox_x2]
         )
 
-    gbox_cy = (gbox_y2 + gbox_y1) / 2.
-    gbox_cx = (gbox_x2 + gbox_x1) / 2.
-    gbox_h = (gbox_y2 - gbox_y1)
-    gbox_w = (gbox_x2 - gbox_x1)
+    if format == BBOX:
+        return max_iou, tf.stack((gt_bbox_y1, gt_bbox_x1, gt_bbox_y2, gt_bbox_x2), -1)
 
-    t_cy = (gbox_cy - dbox_cy) / dbox_h
-    t_cx = (gbox_cx - dbox_cx) / dbox_w
-    t_h = tf.log(gbox_h / dbox_h)
-    t_w = tf.log(gbox_w / dbox_w)
+    gt_bbox_cy = (gt_bbox_y2 + gt_bbox_y1) / 2.
+    gt_bbox_cx = (gt_bbox_x2 + gt_bbox_x1) / 2.
+    gt_bbox_h = (gt_bbox_y2 - gt_bbox_y1)
+    gt_bbox_w = (gt_bbox_x2 - gt_bbox_x1)
 
-    return max_iou, tf.stack((t_cy, t_cx, t_h, t_w), -1)
+    if format == CENTERED:
+        return max_iou, tf.stack((gt_bbox_cy, gt_bbox_cx, gt_bbox_h, gt_bbox_w), -1)
+
+    gt_bbox_reg_dy = (gt_bbox_cy - dbox_cy) / dbox_h
+    gt_bbox_reg_dx = (gt_bbox_cx - dbox_cx) / dbox_w
+    gt_bbox_reg_dh = tf.log(gt_bbox_h / dbox_h)
+    gt_bbox_reg_dw = tf.log(gt_bbox_w / dbox_w)
+    return max_iou, tf.stack((gt_bbox_reg_dy, gt_bbox_reg_dx, gt_bbox_reg_dh, gt_bbox_reg_dw), -1)
 
 
-def encode(model_cfg, labels, gboxes):
-    with tf.name_scope("encode"):
-        labels = tf.cast(labels, tf.int32)
-        num_gboxes = tf.reduce_sum(labels)
+def encode(config, labels, gt_bboxes, format=CENTERED):
+    model_cfg = config['model']
 
-    all_iou = []
-    all_loc = []
+    labels = tf.cast(labels, tf.int32)
+    num_gboxes = tf.reduce_sum(labels)
+
+    iou = []
+    bbox = []
     tb_cfg = model_cfg['textbox_layer']
     for i in range(tb_cfg['num_layers']):
         layer_cfg = tb_cfg[i]
         with tf.name_scope("encode_{}".format(i)):
-            iou, loc = encode_one_layer(layer_cfg,
-                                        num_gboxes,
-                                        gboxes)
-            all_iou.append(iou)
-            all_loc.append(loc)
-    return all_iou, all_loc
+            l_iou, l_bbox = encode_one_layer(layer_cfg,
+                                             num_gboxes,
+                                             gt_bboxes,
+                                             format=format)
+            iou.append(l_iou)
+            bbox.append(l_bbox)
+    return iou, bbox
 
 
 def decode_one_layer(layer_cfg, out_loc):

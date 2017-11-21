@@ -16,10 +16,3 @@ def simple_eval(*arg) :
     with tf.Session() as sess :
         sess.run(tf.global_variables_initializer())
         return sess.run(arg)
-
-if __name__ == "__main__" :
-    t = tf.constant(True)
-    f = tf.constant(False)
-
-    l = logical_and(f, t)
-    print(simple_eval(l))

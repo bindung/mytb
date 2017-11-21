@@ -35,8 +35,8 @@ model:
         padding: VALID
 
 data:
-  num_samples: 3
-  source: poc/test.tfrecord
+  num_samples: 30
+  source: poc/92.tfrecord
 
 eval:
   min_score: 0.5
@@ -45,6 +45,7 @@ eval:
   nms_threshold: 0.5
 
 train:
-  num_readers: 1
-  batch_size: 2
+  load_threads: 1
+  batch_size: 1
   queue_min: 8192
+  negative_ratio: 3.

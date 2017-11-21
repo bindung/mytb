@@ -1,25 +1,56 @@
 import tensorflow as tf
 from tensorflow.contrib import slim
 
-NUM_LAYERS = 6
 
+def define_graph(config):
+    num_layers = 6
 
-def make_conv_layer(config, inputs):
     model_cfg = config['model']
     tb_cfg = model_cfg['textbox_layer']
-    endpoints = []
 
     def calc_scale(k):
         if 'scale' not in tb_cfg[k]:
             min = tb_cfg['min_scale']
             max = tb_cfg['max_scale']
 
-            return min + (max - min) / (NUM_LAYERS - 1) * k
+            return min + (max - min) / (num_layers - 1) * k
 
         return tb_cfg[k]['scale']
 
+    tb_cfg['num_layers'] = num_layers
+
+    tb_cfg[0]['name'] = 'conv4'
+    tb_cfg[0]['scale'] = calc_scale(0)
+    tb_cfg[0]['shape'] = (38, 38)
+
+    tb_cfg[1]['name'] = 'conv7'
+    tb_cfg[1]['scale'] = calc_scale(1)
+    tb_cfg[1]['shape'] = (19, 19)
+
+    tb_cfg[2]['name'] = 'conv8'
+    tb_cfg[2]['scale'] = calc_scale(2)
+    tb_cfg[2]['shape'] = (10, 10)
+
+    tb_cfg[3]['name'] = 'conv9'
+    tb_cfg[3]['scale'] = calc_scale(3)
+    tb_cfg[3]['shape'] = (5, 5)
+
+    tb_cfg[4]['name'] = 'conv10'
+    tb_cfg[4]['scale'] = calc_scale(4)
+    tb_cfg[4]['shape'] = (3, 3)
+
+    tb_cfg[5]['name'] = 'global'
+    tb_cfg[5]['scale'] = calc_scale(5)
+    tb_cfg[5]['shape'] = (1, 1)
+
+
+def conv_layer(config, b_images):
+    model_cfg = config['model']
+    tb_cfg = model_cfg['textbox_layer']
+    endpoints = []
+
     # conv1/2 = 300, 300, 64
-    conv_net = slim.repeat(inputs, 2, slim.conv2d, 64, [3, 3], scope='conv1')
+    conv_net = slim.repeat(b_images, 2, slim.conv2d, 64, [3, 3], scope='conv1')
 
     # pool1 = 150, 150, 64
     conv_net = slim.max_pool2d(conv_net, [2, 2], scope='pool1')
@@ -38,9 +69,6 @@ def make_conv_layer(config, inputs):
 
     # conv4 = 38, 38, 512
     conv_net = slim.repeat(conv_net, 3, slim.conv2d, 512, [3, 3], scope='conv4')
-    tb_cfg[0]['name'] = 'conv4'
-    tb_cfg[0]['scale'] = calc_scale(0)
-    tb_cfg[0]['shape'] = (38, 38)
     endpoints.append(conv_net)
 
     # pool4 = 19, 19, 512
@@ -67,58 +95,40 @@ def make_conv_layer(config, inputs):
 
     # conv7 = 19, 19, 1024
     conv_net = slim.conv2d(conv_net, 1024, [1, 1], scope='conv7')
-    tb_cfg[1]['name'] = 'conv7'
-    tb_cfg[1]['scale'] = calc_scale(1)
-    tb_cfg[1]['shape'] = (19, 19)
     endpoints.append(conv_net)
 
-    scope = 'conv8'
-    with tf.variable_scope(scope):
+    with tf.variable_scope(tb_cfg[2]['name']):
         conv_net = slim.conv2d(conv_net, 256, [1, 1], scope='conv1x1')
         conv_net = slim.conv2d(conv_net, 512, [3, 3], scope='conv3X3', stride=2)
-        tb_cfg[2]['name'] = scope
-        tb_cfg[2]['scale'] = calc_scale(2)
-        tb_cfg[2]['shape'] = (10, 10)
         endpoints.append(conv_net)
 
-    scope = 'conv9'
-    with tf.variable_scope(scope):
+    with tf.variable_scope(tb_cfg[3]['name']):
         conv_net = slim.conv2d(conv_net, 128, [1, 1], scope='conv1x1')
         conv_net = slim.conv2d(conv_net, 256, [3, 3], scope='conv3X3', stride=2)
-        tb_cfg[3]['name'] = scope
-        tb_cfg[3]['scale'] = calc_scale(3)
-        tb_cfg[3]['shape'] = (5, 5)
         endpoints.append(conv_net)
 
-    scope = 'conv10'
-    with tf.variable_scope(scope):
+    with tf.variable_scope(tb_cfg[4]['name']):
         conv_net = slim.conv2d(conv_net, 128, [1, 1], scope='conv1x1')
         conv_net = slim.conv2d(conv_net, 256, [3, 3], scope='conv3X3', stride=2)
-        tb_cfg[4]['name'] = scope
-        tb_cfg[4]['scale'] = calc_scale(4)
-        tb_cfg[4]['shape'] = (3, 3)
         endpoints.append(conv_net)
 
-    scope = 'global'
-    with tf.variable_scope(scope):
+    with tf.variable_scope(tb_cfg[5]['name']):
         conv_net = slim.conv2d(conv_net, 128, [1, 1], scope='conv1x1')
         conv_net = slim.conv2d(conv_net, 256, [3, 3], scope='conv3X3', padding='VALID')
-        tb_cfg[5]['name'] = scope
-        tb_cfg[5]['scale'] = calc_scale(5)
-        tb_cfg[5]['shape'] = (1, 1)
         endpoints.append(conv_net)
 
     tb_cfg['num_layers'] = len(endpoints)
     return endpoints
 
 
-def make_textbox_layer(config, endpoints):
+def textbox_layer(config, endpoints):
     model_cfg = config['model']
     tb_cfg = model_cfg['textbox_layer']
 
-    out_conf = []
-    out_loc = []
-    for i in range(NUM_LAYERS):
+    b_out_conf = []
+    b_out_bbreg = []
+
+    for i in range(tb_cfg['num_layers']):
         layer_cfg = tb_cfg[i]
 
         num_vertical_offset = len(layer_cfg['vertical_offsets'])
@@ -126,30 +136,27 @@ def make_textbox_layer(config, endpoints):
         num_conf = num_vertical_offset * num_ratios * 2
         num_loc = num_vertical_offset * num_ratios * 4
 
-        inputs = endpoints[i]
+        conv_out = endpoints[i]
         # TODO: l2 norm
         with tf.variable_scope(layer_cfg['name']):
             # TODO: 한꺼번에 계산하고 split하는게 더 빠를라나?
-            out_conf.append(
-                slim.conv2d(inputs,
-                            num_conf,
-                            layer_cfg['kernel_size'],
-                            padding=layer_cfg['padding'],
-                            scope='conf_out')
-            )
+            b_out_conf.append(slim.conv2d(conv_out,
+                                          num_conf,
+                                          layer_cfg['kernel_size'],
+                                          padding=layer_cfg['padding'],
+                                          scope='conf_out'))
 
-            out_loc.append(
-                slim.conv2d(inputs,
-                            num_loc,
-                            layer_cfg['kernel_size'],
-                            padding=layer_cfg['padding'],
-                            scope='loc_out')
-            )
-    return out_conf, out_loc
+            b_out_bbreg.append(slim.conv2d(conv_out,
+                                           num_loc,
+                                           layer_cfg['kernel_size'],
+                                           padding=layer_cfg['padding'],
+                                           scope='loc_out'))
+
+    return b_out_conf, b_out_bbreg
 
 
-def make_graph(config, input, isTraining):
-    endpoints = make_conv_layer(config, input)
+def graph(config, b_images, isTraining):
+    endpoints = conv_layer(config, b_images)
 
     batch_norm_params = {
         # Decay for the moving averages.
@@ -161,20 +168,21 @@ def make_graph(config, input, isTraining):
         'fused': True,
     }
 
-    with slim.arg_scope([slim.conv2d], normalizer_fn=slim.batch_norm, normalizer_params=batch_norm_params):
-        return make_textbox_layer(config, endpoints)
+    # with slim.arg_scope([slim.conv2d], normalizer_fn=slim.batch_norm, normalizer_params=batch_norm_params):
+
+    # return b_out_conf, b_out_bbreg
+    return textbox_layer(config, endpoints)
 
 
 if __name__ == '__main__':
-    from textboxes_config import get_config
-    import dataLoader, textboxes_prepreocess
-    from Textboxes import Textboxes
+    from textboxes.config import get_config
+    from textboxes import Textboxes, prepreocess, data
 
     config = get_config("poc/config.yml")
-    provider = dataLoader.Provider(config)
+    provider = data.Provider(config)
     image, height, width, labels, gboxes = provider.get()
     orig_image = image
-    image, labels, gboxes = textboxes_prepreocess.preprocess_for_train(config, image, height, width, labels, gboxes)
+    image, labels, gboxes = prepreocess.preprocess_for_train(config, image, height, width, labels, gboxes)
 
     image = tf.reshape(image, [1, 300, 300, 3])
     tb = Textboxes(config)

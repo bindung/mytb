@@ -41,7 +41,3 @@ def get_config(config_file):
     config['model']['textbox_layer'] = TextboxLayerConfig(conf)
     return config
 
-
-if __name__ == '__main__':
-    config = get_config('poc/config.yml')
-    print(config['model']['textbox_layer'][0]['min_threshold'])
